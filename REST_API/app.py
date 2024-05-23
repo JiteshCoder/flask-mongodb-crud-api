@@ -6,8 +6,9 @@ app = Flask(__name__)
 
 # MongoDB connection
 client = MongoClient('mongodb://localhost:27017')
-db = client['library']
-collection = db['books']
+db = client['new_library']  # Database name
+collection = db['new_book']  # Main collection name
+backup_collection = db['deleted_books']  # Backup collection name for soft deletes
 
 @app.route('/books', methods=['POST'])
 def create_book():
@@ -40,10 +41,30 @@ def update_book(id):
 
 @app.route('/books/<id>', methods=['DELETE'])
 def delete_book(id):
-    result = collection.delete_one({'_id': ObjectId(id)})
-    if result.deleted_count:
+    book = collection.find_one({'_id': ObjectId(id)})
+    if book:
+        backup_collection.insert_one(book)  # Backup the book before deleting
+        collection.delete_one({'_id': ObjectId(id)})
         return jsonify({'message': 'Book deleted'}), 200
     return jsonify({'error': 'Book not found'}), 404
+
+@app.route('/books', methods=['DELETE'])
+def drop_books():
+    all_books = list(collection.find())
+    if all_books:
+        backup_collection.insert_many(all_books)  # Backup all books before deleting
+        collection.drop()
+        return jsonify({'message': 'All books deleted'}), 200
+    return jsonify({'error': 'No books to delete'}), 404
+
+@app.route('/books/undo/<id>', methods=['POST'])
+def undo_delete(id):
+    deleted_book = backup_collection.find_one({'_id': ObjectId(id)})
+    if deleted_book:
+        collection.insert_one(deleted_book)  # Restore the book from backup
+        backup_collection.delete_one({'_id': ObjectId(id)})  # Remove it from backup
+        return jsonify({'message': 'Book restored'}), 200
+    return jsonify({'error': 'Book not found in backup'}), 404
 
 if __name__ == '__main__':
     app.run(debug=True)
